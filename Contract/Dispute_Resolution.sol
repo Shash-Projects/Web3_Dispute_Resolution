@@ -16,8 +16,11 @@ contract dispute_resolution is ERC20, Ownable{
     event jurorId(uint);
     event newJurorsSelected(Juror[]);
     event tokensBought(address, uint256);
+    event disputeCreated(uint256, dispute);
     event jurorsAssigned(dispute, Juror[]);
     event disputeResolved(dispute, uint256);
+    event jurorSlashed(address, uint256);
+    event jurorRewards(address, uint256);
   
 
     uint256 public tokenPrice= 100;
@@ -27,6 +30,7 @@ contract dispute_resolution is ERC20, Ownable{
     uint256 private jurorStakeAmountPool = 0;
     uint256 public totalNoOfJurors = 4;
     uint256 public disputeJurors = 3;
+    uint256 public voteCount =0; 
 
     // mapping(uint256 => bool) public dispute;
     Juror[] public jurors;
@@ -74,7 +78,7 @@ contract dispute_resolution is ERC20, Ownable{
     // Function to allow users to buy tokens
     function buyTokens(uint256 tokenAmount) public payable {
         
-        require(msg.value == tokenAmount*100); // 100 token == 1 ETH
+        require(msg.value == tokenAmount*100); 
         require(balanceOf(address(this)) >= tokenAmount, "Not enough tokens in contract");
         _transfer(address(this), msg.sender, tokenAmount); // Transfer tokens to buyer
         emit tokensBought(msg.sender, tokenAmount);
@@ -109,6 +113,7 @@ contract dispute_resolution is ERC20, Ownable{
         issue.desUrl = desUrl;
         issue.isResolved = false;
         issue.expiry = block.timestamp + (_expiryHr * 1 hours);
+        emit disputeCreated(issue.id, issue);
 
         assignJurors(issue.id);
 
@@ -127,8 +132,6 @@ contract dispute_resolution is ERC20, Ownable{
            
         }
         emit jurorsAssigned(disputeArray[issueId], disputeArray[issueId].assingedJurors);
-
-
     }
 
     function shuffleJurorPool() internal view returns (uint256[] memory) {
@@ -149,16 +152,16 @@ contract dispute_resolution is ERC20, Ownable{
 
     function voteForDispute(uint256 index, bool _vote, uint256 backingAmount) external {
         require(disputeArray[index].isResolved != true, "The dispute is already resolved");
+        voteCount++;
         
 
         dispute storage currentDispute = disputeArray[index];
-        Juror memory juror;
         bool isAssignedJuror = false;
         uint256 jurorIndex;
 
         for (uint256 i = 0; i < currentDispute.assingedJurors.length; i++) {
             if (currentDispute.assingedJurors[i].jurorAddress == msg.sender) {
-                juror = currentDispute.assingedJurors[i];
+                // juror = currentDispute.assingedJurors[i];
                 isAssignedJuror = true;
                 jurorIndex = i;
                 break;
@@ -166,7 +169,7 @@ contract dispute_resolution is ERC20, Ownable{
         }
 
         require(isAssignedJuror, "You are not assigned as a juror for this dispute");
-        require(juror.voted == false, "You have already voted");
+        require(currentDispute.assingedJurors[jurorIndex].voted == false, "You have already voted");
         require(balanceOf(msg.sender) >= backingAmount, "Insufficient token balance for backing");
 
         currentDispute.voteOfJurors.push(vote({
@@ -177,7 +180,7 @@ contract dispute_resolution is ERC20, Ownable{
         currentDispute.assingedJurors[jurorIndex].voted = true;
         currentDispute.assingedJurors[jurorIndex].vote = _vote;
 
-        if(block.timestamp >= currentDispute.expiry || currentDispute.assingedJurors.length == disputeJurors){
+        if(block.timestamp >= currentDispute.expiry || voteCount == disputeJurors){
             resolveDispute(currentDispute);
         }
 
@@ -187,7 +190,7 @@ contract dispute_resolution is ERC20, Ownable{
         uint256 positiveVotes = 0;
         uint256 negativeVotes = 0;
 
-        // Tally the votes
+        
         for (uint256 i = 0; i < _dispute.voteOfJurors.length; i++) {
             if (_dispute.voteOfJurors[i].vote == 1) {
                 positiveVotes++;
@@ -197,8 +200,8 @@ contract dispute_resolution is ERC20, Ownable{
         }
 
         // We'll always take odd numbr of jurors
-         _dispute.solution = (positiveVotes > negativeVotes) ? 1 : 0;
-         _dispute.isResolved = true;
+        _dispute.solution = (positiveVotes > negativeVotes) ? 1 : 0;
+        _dispute.isResolved = true;
         emit disputeResolved(_dispute, _dispute.solution);
 
         fundDistribution();
@@ -206,6 +209,35 @@ contract dispute_resolution is ERC20, Ownable{
     }
 
     function fundDistribution() internal {
+        uint256 rewardPool = 0; 
+        uint256 totalCorrectJurorStake = 0; 
+
+        for (uint256 i = 0; i < disputeArray[disputeArray.length - 1].assingedJurors.length; i++) {
+            Juror storage juror = disputeArray[disputeArray.length - 1].assingedJurors[i];
+
+            if (juror.vote != (disputeArray[disputeArray.length - 1].solution == 1)) {
+                // Slash 50% 
+                juror.stake -= juror.stake / 2;
+                rewardPool += juror.stake / 2;
+                _transfer( msg.sender, address(this), juror.stake / 2); 
+                emit jurorSlashed(juror.jurorAddress, juror.stake / 2);
+                
+            } else {
+                totalCorrectJurorStake += juror.stake;
+            }
+        }
+
+        for (uint256 i = 0; i < disputeArray[disputeArray.length - 1].assingedJurors.length; i++) {
+            Juror storage juror = disputeArray[disputeArray.length - 1].assingedJurors[i];
+
+            if (juror.vote == (disputeArray[disputeArray.length - 1].solution == 1)) {
+                
+                uint256 reward = (juror.stake * rewardPool) / totalCorrectJurorStake;
+                juror.stake += reward; 
+                _transfer(address(this), msg.sender, reward);
+                emit jurorSlashed(juror.jurorAddress, reward);
+            }
+        }
 
     }
 
